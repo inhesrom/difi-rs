@@ -10,6 +10,7 @@ pub(crate) const VITA49_SPEC_VERSION: u32 = 0x0000_0004;
 pub(crate) const CAM_CONTROL_EXECUTE: u32 = 0xA100_0000;
 pub(crate) const CAM_EXTENSION_CONTROL_VALIDATE: u32 = 0xA110_0000;
 pub(crate) const CAM_EXTENSION_ACK_VALIDATE: u32 = 0xA110_0400;
+pub(crate) const CAM_STATUS_REPORT_EXECUTE: u32 = 0xA108_0000;
 pub(crate) const CIF_COMMAND_LONG: u32 = 0x7BB9_8002;
 pub(crate) const CIF_COMMAND_SHORT: u32 = 0x8000_0000;
 pub(crate) const CIF_CONTROL_FLOW_0: u32 = 0x4030_0002;

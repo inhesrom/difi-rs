@@ -11,10 +11,10 @@ use crate::raw::{
 };
 use crate::validation::{
     CAM_CONTROL_EXECUTE, CAM_EXTENSION_ACK_VALIDATE, CAM_EXTENSION_CONTROL_VALIDATE,
-    CIF_COMMAND_LONG, CIF_COMMAND_SHORT, CIF_CONTEXT_CHANGED, CIF_CONTEXT_UNCHANGED,
-    CIF_CONTROL_FLOW_0, CIF_CONTROL_FLOW_1, CIF_VERSION_1, CIF_VERSION_CHANGED,
-    CIF_VERSION_UNCHANGED, VITA49_SPEC_VERSION, expect_word, expect_word_one_of,
-    validate_class_membership, validate_fixed_integer_hz, validate_header_bits,
+    CAM_STATUS_REPORT_EXECUTE, CIF_COMMAND_LONG, CIF_COMMAND_SHORT, CIF_CONTEXT_CHANGED,
+    CIF_CONTEXT_UNCHANGED, CIF_CONTROL_FLOW_0, CIF_CONTROL_FLOW_1, CIF_VERSION_1,
+    CIF_VERSION_CHANGED, CIF_VERSION_UNCHANGED, VITA49_SPEC_VERSION, expect_word,
+    expect_word_one_of, validate_class_membership, validate_fixed_integer_hz, validate_header_bits,
     validate_packet_type_class, validate_tsf, validate_tsm,
 };
 use crate::{ClassId, DifiVersionCode, PacketClassCode, PacketHeader, PayloadFormat};
@@ -147,6 +147,18 @@ fn parse_signal_context(input: &[u8], prologue: Prologue) -> Result<SignalContex
     let sample_rate = FixedU64(read_u64_be(input, 19)?);
     validate_fixed_integer_hz("context bandwidth", bandwidth.0)?;
     validate_fixed_integer_hz("context sample rate", sample_rate.0)?;
+    let if_reference_frequency = FixedI64(read_i64_be(input, 11)?);
+    let rf_reference_frequency = FixedI64(read_i64_be(input, 13)?);
+    let if_band_offset = FixedI64(read_i64_be(input, 15)?);
+    validate_fixed_integer_hz(
+        "context IF reference frequency",
+        if_reference_frequency.0 as u64,
+    )?;
+    validate_fixed_integer_hz(
+        "context RF reference frequency",
+        rf_reference_frequency.0 as u64,
+    )?;
+    validate_fixed_integer_hz("context IF band offset", if_band_offset.0 as u64)?;
 
     Ok(SignalContextPacket {
         prologue,
@@ -154,9 +166,9 @@ fn parse_signal_context(input: &[u8], prologue: Prologue) -> Result<SignalContex
         context_changed: cif0 == CIF_CONTEXT_CHANGED,
         reference_point: read_u32_be(input, 8)?,
         bandwidth,
-        if_reference_frequency: FixedI64(read_i64_be(input, 11)?),
-        rf_reference_frequency: FixedI64(read_i64_be(input, 13)?),
-        if_band_offset: FixedI64(read_i64_be(input, 15)?),
+        if_reference_frequency,
+        rf_reference_frequency,
+        if_band_offset,
         scaling_level: ((read_u32_be(input, 17)? >> 16) as u16) as i16,
         reference_level: (read_u32_be(input, 17)? as u16) as i16,
         gain2: (read_u32_be(input, 18)? >> 16) as u16,
@@ -403,25 +415,44 @@ fn parse_sink_capabilities_response<'a>(
 
 fn parse_status_report(input: &[u8], prologue: Prologue) -> Result<StatusReportPacket> {
     const STATUS_SIZES: &[u16] = &[15, 17, 21];
-    if !STATUS_SIZES.contains(&prologue.header.packet_size_words) {
+    let packet_size = prologue.header.packet_size_words;
+    if !STATUS_SIZES.contains(&packet_size) {
         return Err(ParseError::InvalidPacketSizeSet {
             packet_class: prologue.class_id.packet_class,
             expected: STATUS_SIZES,
-            actual: prologue.header.packet_size_words,
+            actual: packet_size,
         });
     }
     expect_no_padding(prologue)?;
 
     let common = parse_common(input)?;
+    expect_word("status report CAM", CAM_STATUS_REPORT_EXECUTE, common.cam)?;
     let cif0 = read_u32_be(input, 11)?;
     expect_word("status report CIF0", 0, cif0)?;
-    let status_words = [
-        read_u32_be(input, 12)?,
-        read_u32_be(input, 13)?,
-        read_u32_be(input, 14)?,
-    ];
+    let cif1 = read_u32_be(input, 12)?;
+    expect_word("status report CIF1", 0, cif1)?;
+    let packet_errors = read_u32_be(input, 13)?;
+    let sink_errors_warnings = read_u32_be(input, 14)?;
 
-    let reference_level_limit = if prologue.header.packet_size_words >= 17 {
+    // Word 2 of the Status Code Payload carries two "quantitative flag" bits in its low byte:
+    // bit 4 = Reference Level Limit present, bit 3 = Sample Rate & Bandwidth Limits present.
+    // Cross-check them against the packet size.
+    let expected_flags: u32 = match packet_size {
+        15 => 0,
+        17 => 0x10,
+        21 => 0x18,
+        _ => unreachable!("packet size already validated above"),
+    };
+    let actual_flags = sink_errors_warnings & 0x18;
+    if actual_flags != expected_flags {
+        return Err(ParseError::InvalidFieldValue {
+            field: "status report quantitative flags",
+            expected: expected_flags,
+            actual: actual_flags,
+        });
+    }
+
+    let reference_level_limit = if packet_size >= 17 {
         Some(ReferenceLevelLimit {
             raw_min_max: read_u32_be(input, 15)?,
             raw_resolution_reserved: read_u32_be(input, 16)?,
@@ -430,7 +461,7 @@ fn parse_status_report(input: &[u8], prologue: Prologue) -> Result<StatusReportP
         None
     };
 
-    let (sample_rate_limit, bandwidth_limit) = if prologue.header.packet_size_words == 21 {
+    let (sample_rate_limit, bandwidth_limit) = if packet_size == 21 {
         let sample_rate = read_u64_be(input, 17)?;
         let bandwidth = read_u64_be(input, 19)?;
         validate_fixed_integer_hz("status sample rate limit", sample_rate)?;
@@ -444,7 +475,9 @@ fn parse_status_report(input: &[u8], prologue: Prologue) -> Result<StatusReportP
         prologue,
         common,
         cif0,
-        status_words,
+        cif1,
+        packet_errors,
+        sink_errors_warnings,
         reference_level_limit,
         sample_rate_limit,
         bandwidth_limit,
