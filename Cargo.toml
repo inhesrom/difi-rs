@@ -1,0 +1,22 @@
+[package]
+name = "difi"
+version = "0.1.0"
+edition = "2024"
+
+[features]
+default = []
+pcap-tests = []
+serde = ["dep:serde"]
+write = []
+
+[dependencies]
+serde = { version = "1", features = ["derive"], optional = true }
+thiserror = "2"
+
+[dev-dependencies]
+criterion = "0.7"
+proptest = "1"
+
+[[bench]]
+name = "parser"
+harness = false
