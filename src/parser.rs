@@ -9,18 +9,17 @@ use crate::packet::{Packet, Prologue};
 use crate::raw::{
     PROLOGUE_BYTES, PROLOGUE_WORDS, WORD_BYTES, read_i64_be, read_u32_be, read_u64_be,
 };
-use crate::validation::{
-    CAM_CONTROL_EXECUTE, CAM_EXTENSION_ACK_VALIDATE, CAM_EXTENSION_CONTROL_VALIDATE,
-    CAM_STATUS_REPORT_EXECUTE, CIF_COMMAND_LONG, CIF_COMMAND_SHORT, CIF_CONTEXT_CHANGED,
-    CIF_CONTEXT_UNCHANGED, CIF_CONTROL_FLOW_0, CIF_CONTROL_FLOW_1, CIF_VERSION_1,
-    CIF_VERSION_CHANGED, CIF_VERSION_UNCHANGED, VITA49_SPEC_VERSION, expect_word,
-    expect_word_one_of, validate_class_membership, validate_fixed_integer_hz, validate_header_bits,
-    validate_packet_type_class, validate_tsf, validate_tsm,
+use crate::standard::{
+    CIF_CONTEXT_CHANGED, CIF_VERSION_CHANGED, PacketLayout, ParseOptions, StandardProfile,
 };
+use crate::validation::validate_fixed_integer_hz;
 use crate::{ClassId, DifiVersionCode, PacketClassCode, PacketHeader, PayloadFormat};
 
-pub(crate) fn parse_packet_exact(input: &[u8]) -> Result<Packet<'_>> {
-    let (packet, remainder) = parse_packet_prefix(input)?;
+pub(crate) fn parse_packet_exact_with_options(
+    input: &[u8],
+    options: ParseOptions,
+) -> Result<Packet<'_>> {
+    let (packet, remainder) = parse_packet_prefix_with_options(input, options)?;
     if remainder.is_empty() {
         Ok(packet)
     } else {
@@ -30,7 +29,10 @@ pub(crate) fn parse_packet_exact(input: &[u8]) -> Result<Packet<'_>> {
     }
 }
 
-pub(crate) fn parse_packet_prefix(input: &[u8]) -> Result<(Packet<'_>, &[u8])> {
+pub(crate) fn parse_packet_prefix_with_options(
+    input: &[u8],
+    options: ParseOptions,
+) -> Result<(Packet<'_>, &[u8])> {
     if input.len() < PROLOGUE_BYTES {
         return Err(ParseError::InputTooShort {
             min: PROLOGUE_BYTES,
@@ -56,21 +58,24 @@ pub(crate) fn parse_packet_prefix(input: &[u8]) -> Result<(Packet<'_>, &[u8])> {
 
     let packet_bytes = &input[..packet_len];
     let remainder = &input[packet_len..];
-    let packet = parse_single_packet(packet_bytes)?;
+    let profile = StandardProfile::new(options);
+    let packet = parse_single_packet(packet_bytes, profile)?;
     Ok((packet, remainder))
 }
 
-fn parse_single_packet(input: &[u8]) -> Result<Packet<'_>> {
+fn parse_single_packet(input: &[u8], profile: StandardProfile) -> Result<Packet<'_>> {
     let header = PacketHeader::parse(read_u32_be(input, 0)?)?;
     if !header.class_id_indicator {
         return Err(ParseError::MissingClassId);
     }
     let class_id = ClassId::parse(read_u32_be(input, 2)?, read_u32_be(input, 3)?)?;
-    validate_packet_type_class(header.packet_type, class_id.packet_class)?;
-    validate_header_bits(header, class_id.packet_class)?;
-    validate_class_membership(class_id.information_class, class_id.packet_class)?;
-    validate_tsf(header, class_id.packet_class)?;
-    validate_tsm(header, class_id.information_class, class_id.packet_class)?;
+    profile.validate_packet_type_available(header.packet_type)?;
+    profile.validate_packet_class_available(class_id.packet_class)?;
+    profile.validate_packet_type_class(header.packet_type, class_id.packet_class)?;
+    profile.validate_header_bits(header, class_id.packet_class)?;
+    profile.validate_class_membership(class_id.information_class, class_id.packet_class)?;
+    profile.validate_tsf(header, class_id.packet_class)?;
+    profile.validate_tsm(header, class_id.information_class, class_id.packet_class)?;
 
     let prologue = Prologue {
         header,
@@ -82,31 +87,37 @@ fn parse_single_packet(input: &[u8]) -> Result<Packet<'_>> {
 
     match class_id.packet_class {
         PacketClassCode::StandardFlowSignalData | PacketClassCode::SampleCountSignalData => {
-            parse_data(input, prologue).map(Packet::SignalData)
+            parse_data(input, prologue, profile).map(Packet::SignalData)
         }
         PacketClassCode::StandardFlowSignalContext | PacketClassCode::SampleCountSignalContext => {
-            parse_signal_context(input, prologue).map(Packet::SignalContext)
+            parse_signal_context(input, prologue, profile).map(Packet::SignalContext)
         }
         PacketClassCode::VersionFlowSignalContext => {
-            parse_version_context(input, prologue).map(Packet::VersionContext)
+            parse_version_context(input, prologue, profile).map(Packet::VersionContext)
         }
         PacketClassCode::SampleCountTimingFlowControl
         | PacketClassCode::RealTimeTimingFlowControl => {
-            parse_timing_flow_control(input, prologue).map(Packet::TimingFlowControl)
+            parse_timing_flow_control(input, prologue, profile).map(Packet::TimingFlowControl)
         }
         PacketClassCode::SinkCapabilitiesQuery => {
-            parse_sink_capabilities_query(input, prologue).map(Packet::SinkCapabilitiesQuery)
+            parse_sink_capabilities_query(input, prologue, profile)
+                .map(Packet::SinkCapabilitiesQuery)
         }
         PacketClassCode::SinkCapabilitiesResponse => {
-            parse_sink_capabilities_response(input, prologue).map(Packet::SinkCapabilitiesResponse)
+            parse_sink_capabilities_response(input, prologue, profile)
+                .map(Packet::SinkCapabilitiesResponse)
         }
         PacketClassCode::StatusReport => {
-            parse_status_report(input, prologue).map(Packet::StatusReport)
+            parse_status_report(input, prologue, profile).map(Packet::StatusReport)
         }
     }
 }
 
-fn parse_data<'a>(input: &'a [u8], prologue: Prologue) -> Result<SignalDataPacket<'a>> {
+fn parse_data<'a>(
+    input: &'a [u8],
+    prologue: Prologue,
+    profile: StandardProfile,
+) -> Result<SignalDataPacket<'a>> {
     let packet_class = prologue.class_id.packet_class;
     let information_class = prologue.class_id.information_class;
     if prologue.header.packet_size_words < PROLOGUE_WORDS {
@@ -117,7 +128,7 @@ fn parse_data<'a>(input: &'a [u8], prologue: Prologue) -> Result<SignalDataPacke
 
     let payload = &input[PROLOGUE_BYTES..];
     let pad_bit_count = prologue.class_id.pad_bit_count;
-    if pad_bit_count != 0 && !information_class.permits_data_padding(packet_class) {
+    if pad_bit_count != 0 && !profile.permits_data_padding(information_class, packet_class) {
         return Err(ParseError::PadBitsNotAllowed {
             information_class,
             packet_class,
@@ -129,20 +140,20 @@ fn parse_data<'a>(input: &'a [u8], prologue: Prologue) -> Result<SignalDataPacke
     Ok(SignalDataPacket { prologue, payload })
 }
 
-fn parse_signal_context(input: &[u8], prologue: Prologue) -> Result<SignalContextPacket> {
-    expect_size(
+fn parse_signal_context(
+    input: &[u8],
+    prologue: Prologue,
+    profile: StandardProfile,
+) -> Result<SignalContextPacket> {
+    profile.expect_packet_size(
+        PacketLayout::SignalContext,
         prologue.class_id.packet_class,
-        27,
         prologue.header.packet_size_words,
     )?;
     expect_no_padding(prologue)?;
 
     let cif0 = read_u32_be(input, 7)?;
-    expect_word_one_of(
-        "signal context CIF0",
-        cif0,
-        &[CIF_CONTEXT_CHANGED, CIF_CONTEXT_UNCHANGED],
-    )?;
+    profile.expect_signal_context_cif0(cif0)?;
     let bandwidth = FixedU64(read_u64_be(input, 9)?);
     let sample_rate = FixedU64(read_u64_be(input, 19)?);
     validate_fixed_integer_hz("context bandwidth", bandwidth.0)?;
@@ -181,28 +192,24 @@ fn parse_signal_context(input: &[u8], prologue: Prologue) -> Result<SignalContex
     })
 }
 
-fn parse_version_context(input: &[u8], prologue: Prologue) -> Result<crate::VersionContextPacket> {
-    expect_size(
+fn parse_version_context(
+    input: &[u8],
+    prologue: Prologue,
+    profile: StandardProfile,
+) -> Result<crate::VersionContextPacket> {
+    profile.expect_packet_size(
+        PacketLayout::VersionContext,
         prologue.class_id.packet_class,
-        11,
         prologue.header.packet_size_words,
     )?;
     expect_no_padding(prologue)?;
 
     let cif0 = read_u32_be(input, 7)?;
-    expect_word_one_of(
-        "version context CIF0",
-        cif0,
-        &[CIF_VERSION_CHANGED, CIF_VERSION_UNCHANGED],
-    )?;
+    profile.expect_version_context_cif0(cif0)?;
     let cif1 = read_u32_be(input, 8)?;
-    expect_word("version context CIF1", CIF_VERSION_1, cif1)?;
+    profile.expect_version_context_cif1(cif1)?;
     let vita49_spec_version = read_u32_be(input, 9)?;
-    expect_word(
-        "VITA 49.2 spec version",
-        VITA49_SPEC_VERSION,
-        vita49_spec_version,
-    )?;
+    profile.expect_vita49_spec_version(vita49_spec_version)?;
 
     let version_word = read_u32_be(input, 10)?;
     let device_type = ((version_word >> 6) & 0xF) as u8;
@@ -236,20 +243,24 @@ fn parse_version_context(input: &[u8], prologue: Prologue) -> Result<crate::Vers
     })
 }
 
-fn parse_timing_flow_control(input: &[u8], prologue: Prologue) -> Result<TimingFlowControlPacket> {
-    expect_size(
+fn parse_timing_flow_control(
+    input: &[u8],
+    prologue: Prologue,
+    profile: StandardProfile,
+) -> Result<TimingFlowControlPacket> {
+    profile.expect_packet_size(
+        PacketLayout::TimingFlowControl,
         prologue.class_id.packet_class,
-        21,
         prologue.header.packet_size_words,
     )?;
     expect_no_padding(prologue)?;
 
     let common = parse_common(input)?;
-    expect_word("timing flow control CAM", CAM_CONTROL_EXECUTE, common.cam)?;
+    profile.expect_timing_flow_control_cam(common.cam)?;
     let cif0 = read_u32_be(input, 11)?;
     let cif1 = read_u32_be(input, 12)?;
-    expect_word("timing flow control CIF0", CIF_CONTROL_FLOW_0, cif0)?;
-    expect_word("timing flow control CIF1", CIF_CONTROL_FLOW_1, cif1)?;
+    profile.expect_timing_flow_control_cif0(cif0)?;
+    profile.expect_timing_flow_control_cif1(cif1)?;
 
     let sample_rate_raw = read_u64_be(input, 14)?;
     validate_fixed_integer_hz("timing flow control sample rate", sample_rate_raw)?;
@@ -286,28 +297,21 @@ fn parse_timing_flow_control(input: &[u8], prologue: Prologue) -> Result<TimingF
 fn parse_sink_capabilities_query(
     input: &[u8],
     prologue: Prologue,
+    profile: StandardProfile,
 ) -> Result<SinkCapabilitiesQueryPacket> {
     expect_no_padding(prologue)?;
     let common = parse_common(input)?;
-    expect_word(
-        "sink capabilities query CAM",
-        CAM_EXTENSION_CONTROL_VALIDATE,
-        common.cam,
-    )?;
+    profile.expect_sink_capabilities_query_cam(common.cam)?;
     let cif0 = read_u32_be(input, 11)?;
     let is_short = (cif0 & 0x8000_0000) != 0;
 
     if is_short {
-        expect_size(
+        profile.expect_packet_size(
+            PacketLayout::SinkCapabilitiesQueryShort,
             prologue.class_id.packet_class,
-            15,
             prologue.header.packet_size_words,
         )?;
-        expect_word(
-            "sink capabilities short query CIF0",
-            CIF_COMMAND_SHORT,
-            cif0,
-        )?;
+        profile.expect_sink_capabilities_short_query_cif0(cif0)?;
         Ok(SinkCapabilitiesQueryPacket {
             prologue,
             common,
@@ -318,18 +322,14 @@ fn parse_sink_capabilities_query(
             sink_time_calibration_fractional: Some(read_u64_be(input, 13)?),
         })
     } else {
-        expect_size(
+        profile.expect_packet_size(
+            PacketLayout::SinkCapabilitiesQueryLong,
             prologue.class_id.packet_class,
-            13,
             prologue.header.packet_size_words,
         )?;
-        expect_word("sink capabilities long query CIF0", CIF_COMMAND_LONG, cif0)?;
+        profile.expect_sink_capabilities_long_query_cif0(cif0)?;
         let cif1 = read_u32_be(input, 12)?;
-        expect_word(
-            "sink capabilities long query CIF1",
-            CIF_CONTROL_FLOW_1,
-            cif1,
-        )?;
+        profile.expect_sink_capabilities_long_query_cif1(cif1)?;
         Ok(SinkCapabilitiesQueryPacket {
             prologue,
             common,
@@ -345,28 +345,21 @@ fn parse_sink_capabilities_query(
 fn parse_sink_capabilities_response<'a>(
     input: &'a [u8],
     prologue: Prologue,
+    profile: StandardProfile,
 ) -> Result<SinkCapabilitiesResponsePacket<'a>> {
     expect_no_padding(prologue)?;
     let common = parse_common(input)?;
-    expect_word(
-        "sink capabilities response CAM",
-        CAM_EXTENSION_ACK_VALIDATE,
-        common.cam,
-    )?;
+    profile.expect_sink_capabilities_response_cam(common.cam)?;
     let cif0 = read_u32_be(input, 11)?;
     let is_short = (cif0 & 0x8000_0000) != 0;
 
     if is_short {
-        expect_size(
+        profile.expect_packet_size(
+            PacketLayout::SinkCapabilitiesResponseShort,
             prologue.class_id.packet_class,
-            18,
             prologue.header.packet_size_words,
         )?;
-        expect_word(
-            "sink capabilities short response CIF0",
-            CIF_COMMAND_SHORT,
-            cif0,
-        )?;
+        profile.expect_sink_capabilities_short_response_cif0(cif0)?;
         Ok(SinkCapabilitiesResponsePacket {
             prologue,
             common,
@@ -387,17 +380,9 @@ fn parse_sink_capabilities_response<'a>(
                 actual: prologue.header.packet_size_words,
             });
         }
-        expect_word(
-            "sink capabilities long response CIF0",
-            CIF_COMMAND_LONG,
-            cif0,
-        )?;
+        profile.expect_sink_capabilities_long_response_cif0(cif0)?;
         let cif1 = read_u32_be(input, 12)?;
-        expect_word(
-            "sink capabilities long response CIF1",
-            CIF_CONTROL_FLOW_1,
-            cif1,
-        )?;
+        profile.expect_sink_capabilities_long_response_cif1(cif1)?;
         Ok(SinkCapabilitiesResponsePacket {
             prologue,
             common,
@@ -413,24 +398,21 @@ fn parse_sink_capabilities_response<'a>(
     }
 }
 
-fn parse_status_report(input: &[u8], prologue: Prologue) -> Result<StatusReportPacket> {
-    const STATUS_SIZES: &[u16] = &[15, 17, 21];
+fn parse_status_report(
+    input: &[u8],
+    prologue: Prologue,
+    profile: StandardProfile,
+) -> Result<StatusReportPacket> {
     let packet_size = prologue.header.packet_size_words;
-    if !STATUS_SIZES.contains(&packet_size) {
-        return Err(ParseError::InvalidPacketSizeSet {
-            packet_class: prologue.class_id.packet_class,
-            expected: STATUS_SIZES,
-            actual: packet_size,
-        });
-    }
+    profile.validate_status_report_size(prologue.class_id.packet_class, packet_size)?;
     expect_no_padding(prologue)?;
 
     let common = parse_common(input)?;
-    expect_word("status report CAM", CAM_STATUS_REPORT_EXECUTE, common.cam)?;
+    profile.expect_status_report_cam(common.cam)?;
     let cif0 = read_u32_be(input, 11)?;
-    expect_word("status report CIF0", 0, cif0)?;
+    profile.expect_status_report_cif0(cif0)?;
     let cif1 = read_u32_be(input, 12)?;
-    expect_word("status report CIF1", 0, cif1)?;
+    profile.expect_status_report_cif1(cif1)?;
     let packet_errors = read_u32_be(input, 13)?;
     let sink_errors_warnings = read_u32_be(input, 14)?;
 
@@ -491,18 +473,6 @@ fn parse_common(input: &[u8]) -> Result<CommandCommon> {
         controllee_id: read_u32_be(input, 9)?,
         controller_id: read_u32_be(input, 10)?,
     })
-}
-
-fn expect_size(packet_class: PacketClassCode, expected: u16, actual: u16) -> Result<()> {
-    if actual == expected {
-        Ok(())
-    } else {
-        Err(ParseError::InvalidPacketSize {
-            packet_class,
-            expected,
-            actual,
-        })
-    }
 }
 
 fn expect_no_padding(prologue: Prologue) -> Result<()> {

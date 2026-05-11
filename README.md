@@ -1,12 +1,15 @@
 # difi
 
-`difi` is a Rust parser library for UDP payloads containing DIFI Standard 1.3.0 packets.
+`difi` is a Rust parser library for UDP payloads containing DIFI Standard packets. The default
+parser profile is DIFI 1.3.0 in strict mode.
 
 The parser is intentionally strict and zero-copy:
 
 - `parse_packet_exact(input)` parses one complete packet and rejects trailing bytes.
 - `parse_packet_prefix(input)` parses the first packet and returns the remaining bytes.
 - `parse_packet(input)` is a documented alias for exact parsing.
+- `parse_packet_exact_with_options(input, options)` and
+  `parse_packet_prefix_with_options(input, options)` select a specific DIFI standard profile.
 - Signal-data payloads and long-form sink-capability response extension tables are returned as
   borrowed `&[u8]` slices into the caller's input buffer.
 - The crate forbids unsafe code and uses explicit big-endian reads rather than packed structs or
@@ -39,6 +42,11 @@ the supported layouts, and exact/prefix length semantics.
 The implementation follows the field maps in the DIFI 1.3.0 PDF where prose conflicts with
 tables. In particular, Timing Flow Control packets are parsed as 21-word packets so words 19-21
 carry the buffer-size and buffer-status fields.
+
+`ParseOptions` selects `DifiStandardVersion::V1_1`, `V1_2_1`, or `V1_3_0`. Older profiles reject
+packet classes added by later standards. `CompatibilityMode::LegacyVersionPacketType` allows DIFI
+1.2.1 parsing to accept the DIFI 1.1 version-context packet type `0x5`; strict DIFI 1.2.1 and the
+default DIFI 1.3.0 profile use context packet type `0x4` for version context.
 
 ## Helpers
 

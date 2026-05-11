@@ -6,6 +6,7 @@ use crate::error::{ParseError, Result};
 pub enum PacketType {
     SignalDataWithStreamId = 0x1,
     ContextWithStreamId = 0x4,
+    VersionWithStreamId = 0x5,
     CommandWithStreamId = 0x6,
     ExtensionCommandWithStreamId = 0x7,
 }
@@ -17,6 +18,7 @@ impl TryFrom<u8> for PacketType {
         match value {
             0x1 => Ok(Self::SignalDataWithStreamId),
             0x4 => Ok(Self::ContextWithStreamId),
+            0x5 => Ok(Self::VersionWithStreamId),
             0x6 => Ok(Self::CommandWithStreamId),
             0x7 => Ok(Self::ExtensionCommandWithStreamId),
             value => Err(ParseError::UnsupportedPacketType { value }),
@@ -98,7 +100,7 @@ impl PacketHeader {
         let sequence = ((raw >> 16) & 0xF) as u8;
         let packet_size_words = (raw & 0xFFFF) as u16;
         let tsm = match packet_type {
-            PacketType::ContextWithStreamId => {
+            PacketType::ContextWithStreamId | PacketType::VersionWithStreamId => {
                 if (type_specific_bits & 0b001) == 1 {
                     Some(TimestampMode::Coarse)
                 } else {

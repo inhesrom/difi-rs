@@ -1,4 +1,4 @@
-use crate::{InformationClassCode, PacketClassCode, PacketType, Tsf, Tsi};
+use crate::{DifiStandardVersion, InformationClassCode, PacketClassCode, PacketType, Tsf, Tsi};
 use thiserror::Error;
 
 pub type Result<T> = core::result::Result<T, ParseError>;
@@ -41,6 +41,18 @@ pub enum ParseError {
 
     #[error("unknown packet class 0x{value:04X}")]
     UnknownPacketClass { value: u16 },
+
+    #[error("packet type {packet_type:?} is not available in DIFI {standard:?}")]
+    PacketTypeNotAvailableInStandard {
+        standard: DifiStandardVersion,
+        packet_type: PacketType,
+    },
+
+    #[error("packet class {packet_class:?} is not available in DIFI {standard:?}")]
+    PacketClassNotAvailableInStandard {
+        standard: DifiStandardVersion,
+        packet_class: PacketClassCode,
+    },
 
     #[error(
         "packet class {packet_class:?} is not valid for information class {information_class:?}"

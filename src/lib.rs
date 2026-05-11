@@ -14,6 +14,7 @@ mod payload_format;
 mod raw;
 mod samples;
 mod sequence;
+mod standard;
 mod validation;
 mod version;
 
@@ -36,6 +37,7 @@ pub use samples::{
     ComplexI8, ComplexI16, IqI8Samples, IqI16Samples, SampleError, iq_i8_samples, iq_i16_samples,
 };
 pub use sequence::{SequenceKey, SequenceStatus, SequenceTracker};
+pub use standard::{CompatibilityMode, DifiStandardVersion, ParseOptions};
 pub use version::{DifiVersionCode, VersionContextPacket};
 
 /// Parses exactly one DIFI packet from a UDP payload.
@@ -46,14 +48,33 @@ pub fn parse_packet(input: &[u8]) -> Result<Packet<'_>> {
 }
 
 /// Parses exactly one DIFI packet and rejects trailing bytes.
+///
+/// Defaults to DIFI 1.3.0 strict parsing. Use [`parse_packet_exact_with_options`] to select
+/// an older standard profile or compatibility mode.
 pub fn parse_packet_exact(input: &[u8]) -> Result<Packet<'_>> {
-    parser::parse_packet_exact(input)
+    parse_packet_exact_with_options(input, ParseOptions::default())
+}
+
+/// Parses exactly one DIFI packet with an explicit standard profile and rejects trailing bytes.
+pub fn parse_packet_exact_with_options(input: &[u8], options: ParseOptions) -> Result<Packet<'_>> {
+    parser::parse_packet_exact_with_options(input, options)
 }
 
 /// Parses the first DIFI packet from the front of `input`.
 ///
 /// The packet size in the DIFI header controls how many bytes are consumed. Any bytes after
 /// the first packet are returned as the remainder.
+///
+/// Defaults to DIFI 1.3.0 strict parsing. Use [`parse_packet_prefix_with_options`] to select
+/// an older standard profile or compatibility mode.
 pub fn parse_packet_prefix(input: &[u8]) -> Result<(Packet<'_>, &[u8])> {
-    parser::parse_packet_prefix(input)
+    parse_packet_prefix_with_options(input, ParseOptions::default())
+}
+
+/// Parses the first DIFI packet from the front of `input` with an explicit standard profile.
+pub fn parse_packet_prefix_with_options(
+    input: &[u8],
+    options: ParseOptions,
+) -> Result<(Packet<'_>, &[u8])> {
+    parser::parse_packet_prefix_with_options(input, options)
 }
