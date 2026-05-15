@@ -23,3 +23,21 @@ pub(crate) fn read_u64_be(input: &[u8], word_index: usize) -> Result<u64> {
 pub(crate) fn read_i64_be(input: &[u8], word_index: usize) -> Result<i64> {
     Ok(read_u64_be(input, word_index)? as i64)
 }
+
+#[cfg(feature = "write")]
+pub(crate) fn write_u32_be(output: &mut [u8], word_index: usize, value: u32) {
+    let start = word_index * WORD_BYTES;
+    let end = start + WORD_BYTES;
+    output[start..end].copy_from_slice(&value.to_be_bytes());
+}
+
+#[cfg(feature = "write")]
+pub(crate) fn write_u64_be(output: &mut [u8], word_index: usize, value: u64) {
+    write_u32_be(output, word_index, (value >> 32) as u32);
+    write_u32_be(output, word_index + 1, value as u32);
+}
+
+#[cfg(feature = "write")]
+pub(crate) fn write_i64_be(output: &mut [u8], word_index: usize, value: i64) {
+    write_u64_be(output, word_index, value as u64);
+}

@@ -1,7 +1,8 @@
 # difi
 
-`difi` is a Rust parser library for UDP payloads containing DIFI Standard packets. The default
-parser profile is DIFI 1.3.0 in strict mode.
+`difi` is a Rust parser library for UDP payloads containing DIFI Standard packets, with an
+optional buffer-only writer behind the `write` feature. The default parser and writer profile is
+DIFI 1.3.0 in strict mode.
 
 The parser is intentionally strict and zero-copy:
 
@@ -60,10 +61,53 @@ The sample helpers are deliberately narrow:
 
 Other bit depths use DIFI link-efficient packing and are left as borrowed bytes.
 
+## Writing
+
+Enable the `write` feature to encode the current public `Packet<'_>` variants into caller-owned
+buffers:
+
+- `writer::encoded_len(packet)` and `writer::write_packet(packet, out)` use strict DIFI 1.3.0.
+- `writer::encoded_len_with_options` and `writer::write_packet_with_options` select DIFI 1.1,
+  DIFI 1.2.1, or legacy version packet type compatibility.
+- The writer validates raw/decoded field agreement, standard-profile rules, packet sizes, padding,
+  fixed CIF/CAM values, and output capacity before writing.
+- Output is canonical and parseable. It is not a raw-byte-preserving reserializer for contradictory
+  hand-built packet structs.
+
+The writer never allocates and does not provide `Vec` convenience functions. Size the output buffer
+first, then write into it:
+
+```rust,ignore
+let packet = difi::parse_packet_exact(input)?;
+let len = difi::writer::encoded_len(&packet)?;
+let mut out = [0_u8; 1500];
+let written = difi::writer::write_packet(&packet, &mut out[..len])?;
+assert_eq!(written, len);
+```
+
+For common IQ Signal Data payloads, direct helpers avoid building a `Packet<'_>`:
+
+```rust,ignore
+let spec = difi::writer::SignalDataWriteSpec {
+    stream_id: 0x0102_0304,
+    information_class: difi::InformationClassCode::BasicDataPlane,
+    packet_class: difi::PacketClassCode::StandardFlowSignalData,
+    tsi: difi::Tsi::Utc,
+    tsf: difi::Tsf::RealTimePicoseconds,
+    sequence: 0,
+    integer_seconds_timestamp: 7,
+    fractional_seconds_timestamp: 42,
+};
+let samples = [difi::ComplexI16 { i: 1, q: -2 }];
+let mut out = [0_u8; 64];
+let written = difi::writer::write_iq_data_i16(spec, &samples, &mut out)?;
+```
+
 ## Feature Gates
 
 - Default: parser only.
-- `write`: exposes a placeholder writer module. Encoding parsed packets is not implemented yet.
+- `write`: exposes strict canonical packet writing and direct ComplexI8/ComplexI16 IQ Signal Data
+  helpers.
 - `serde`: derives serde support for copyable metadata types.
 - `pcap-tests`: reserved for local conformance tests against external packet captures.
 
