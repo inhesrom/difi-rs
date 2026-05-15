@@ -109,16 +109,18 @@ let written = difi::writer::write_iq_data_i16(spec, &samples, &mut out)?;
 - `write`: exposes strict canonical packet writing and direct ComplexI8/ComplexI16 IQ Signal Data
   helpers.
 - `serde`: derives serde support for copyable metadata types.
-- `pcap-tests`: reserved for local conformance tests against external packet captures.
+- `pcap-tests`: enables opt-in smoke tests against external DIFI certification captures.
 
 ## External Conformance
 
-Official DIFI conformance assets are not vendored. Use the opt-in hook under `pcap-tests/`:
+Official DIFI conformance assets are not vendored. Use the opt-in hook under `pcap-tests/` to
+clone or update a local checkout and parse known DIFI UDP payloads from its example captures:
 
 ```sh
 pcap-tests/fetch-difi-certification.sh
 DIFI_CERTIFICATION_DIR=pcap-tests/DIFI-Certification cargo test --features pcap-tests
 ```
 
-Keep third-party captures out of this repository unless their license explicitly permits
-redistribution.
+The `pcap-tests` feature skips this external smoke test unless `DIFI_CERTIFICATION_DIR` points at a
+local checkout. Keep third-party captures out of this repository unless their license explicitly
+permits redistribution.
