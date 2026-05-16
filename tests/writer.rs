@@ -10,7 +10,7 @@ use difi::writer::{
 use difi::{
     CompatibilityMode, ComplexI8, ComplexI16, DifiStandardVersion, InformationClassCode, Packet,
     PacketClassCode, PacketType, ParseError, ParseOptions, SignalDataPacket, Tsf, Tsi,
-    parse_packet_exact, parse_packet_exact_with_options,
+    iq_i8_samples, iq_i16_samples, parse_packet_exact, parse_packet_exact_with_options,
 };
 
 use common::{
@@ -536,9 +536,29 @@ fn iq_spec() -> SignalDataWriteSpec {
         tsi: Tsi::Utc,
         tsf: Tsf::RealTimePicoseconds,
         sequence: 5,
-        integer_seconds_timestamp: 7,
-        fractional_seconds_timestamp: 42,
+        integer_seconds_timestamp: 1_700_000_000,
+        fractional_seconds_timestamp: 123_456_789_012,
     }
+}
+
+fn assert_signal_data_spec(packet: &SignalDataPacket<'_>, spec: SignalDataWriteSpec) {
+    assert_eq!(packet.prologue.stream_id, spec.stream_id);
+    assert_eq!(
+        packet.prologue.class_id.information_class,
+        spec.information_class
+    );
+    assert_eq!(packet.prologue.class_id.packet_class, spec.packet_class);
+    assert_eq!(packet.prologue.header.tsi, spec.tsi);
+    assert_eq!(packet.prologue.header.tsf, spec.tsf);
+    assert_eq!(packet.prologue.header.sequence, spec.sequence);
+    assert_eq!(
+        packet.prologue.integer_seconds_timestamp,
+        spec.integer_seconds_timestamp
+    );
+    assert_eq!(
+        packet.prologue.fractional_seconds_timestamp,
+        spec.fractional_seconds_timestamp
+    );
 }
 
 #[test]
@@ -550,9 +570,9 @@ fn writes_direct_complex_i8_iq_data() {
         0x0102_0304,
         cid0,
         cid1,
-        7,
-        0,
-        42,
+        0x6553_F100,
+        0x0000_001C,
+        0xBE99_1A14,
         0x01FF_807F,
     ]);
 
@@ -573,6 +593,33 @@ fn writes_direct_complex_i8_iq_data() {
 }
 
 #[test]
+fn write_iq_data_i8_round_trips_through_parser() {
+    let spec = iq_spec();
+    let samples = [
+        ComplexI8 { i: 0, q: 0 },
+        ComplexI8 { i: 1, q: -1 },
+        ComplexI8 { i: -128, q: 127 },
+        ComplexI8 { i: 42, q: -43 },
+        ComplexI8 { i: 85, q: -86 },
+        ComplexI8 { i: -12, q: 34 },
+    ];
+    let mut out = [0_u8; 64];
+    let written = write_iq_data_i8(spec, &samples, &mut out).expect("write");
+
+    let Packet::SignalData(packet) =
+        parse_packet_exact(&out[..written]).expect("parse written IQ data")
+    else {
+        panic!("expected signal data");
+    };
+    assert_signal_data_spec(&packet, spec);
+
+    let decoded: Vec<_> = iq_i8_samples(packet.payload)
+        .expect("decode i8 samples")
+        .collect();
+    assert_eq!(decoded.as_slice(), samples.as_slice());
+}
+
+#[test]
 fn writes_direct_complex_i16_iq_data() {
     let samples = [
         ComplexI16 { i: 1, q: -2 },
@@ -587,9 +634,9 @@ fn writes_direct_complex_i16_iq_data() {
         0x0102_0304,
         cid0,
         cid1,
-        7,
-        0,
-        42,
+        0x6553_F100,
+        0x0000_001C,
+        0xBE99_1A14,
         0x0001_FFFE,
         0x8000_7FFF,
     ]);
@@ -602,4 +649,36 @@ fn writes_direct_complex_i16_iq_data() {
     let written = write_iq_data_i16(iq_spec(), &samples, &mut out).expect("write");
     assert_eq!(written, expected.len());
     assert_eq!(&out, expected.as_slice());
+}
+
+#[test]
+fn write_iq_data_i16_round_trips_through_parser() {
+    let spec = iq_spec();
+    let samples = [
+        ComplexI16 { i: 0, q: 0 },
+        ComplexI16 { i: 1, q: -2 },
+        ComplexI16 {
+            i: -32768,
+            q: 32767,
+        },
+        ComplexI16 {
+            i: 0x1234,
+            q: -0x1234,
+        },
+        ComplexI16 { i: 255, q: -256 },
+    ];
+    let mut out = [0_u8; 64];
+    let written = write_iq_data_i16(spec, &samples, &mut out).expect("write");
+
+    let Packet::SignalData(packet) =
+        parse_packet_exact(&out[..written]).expect("parse written IQ data")
+    else {
+        panic!("expected signal data");
+    };
+    assert_signal_data_spec(&packet, spec);
+
+    let decoded: Vec<_> = iq_i16_samples(packet.payload)
+        .expect("decode i16 samples")
+        .collect();
+    assert_eq!(decoded.as_slice(), samples.as_slice());
 }
