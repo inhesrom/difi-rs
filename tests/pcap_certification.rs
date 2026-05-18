@@ -1,10 +1,12 @@
 #![cfg(feature = "pcap-tests")]
 
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 
 use difi::{
-    CompatibilityMode, DIFI_CID, DifiStandardVersion, ParseOptions, parse_packet_exact_with_options,
+    CompatibilityMode, DIFI_CID, DifiStandardVersion, Packet, PacketClassCode, PacketType,
+    ParseOptions, Prologue, parse_packet_exact_with_options,
 };
 
 const MAX_FAILURES: usize = 16;
@@ -19,12 +21,12 @@ fn certification_example_pcaps_contain_parseable_difi_udp_payloads() {
 
     let captures = certification_captures(&root).unwrap_or_else(|err| panic!("{err}"));
 
-    let mut udp_payloads_total = 0usize;
-    let mut parsed_payloads = 0usize;
+    let mut summary = CertificationSummary::default();
     let mut failed_payloads = 0usize;
     let mut failures = Vec::new();
 
     for capture in &captures {
+        let mut capture_summary = CaptureSummary::new(capture.clone());
         let input = fs::read(capture).unwrap_or_else(|err| {
             panic!("read {}: {err}", capture.display());
         });
@@ -37,9 +39,11 @@ fn certification_example_pcaps_contain_parseable_difi_udp_payloads() {
             "{} contains no UDP payloads",
             capture.display()
         );
-        udp_payloads_total += udp_payloads.len();
 
         for (payload_index, payload) in udp_payloads.into_iter().enumerate() {
+            summary.record_udp_payload(payload.len());
+            capture_summary.record_udp_payload(payload.len());
+
             if let Err(err) = validate_strict_difi_payload(payload) {
                 failed_payloads += 1;
                 record_failure(
@@ -50,7 +54,11 @@ fn certification_example_pcaps_contain_parseable_difi_udp_payloads() {
             }
 
             match parse_with_supported_profiles(payload) {
-                Ok(()) => parsed_payloads += 1,
+                Ok(parsed) => {
+                    let prologue = *parsed.packet.prologue();
+                    summary.record_parsed_payload(parsed.profile, &prologue);
+                    capture_summary.record_parsed_payload(&prologue);
+                }
                 Err(err) => {
                     failed_payloads += 1;
                     record_failure(
@@ -65,9 +73,11 @@ fn certification_example_pcaps_contain_parseable_difi_udp_payloads() {
                 }
             }
         }
+
+        summary.record_capture(capture_summary);
     }
 
-    assert!(udp_payloads_total > 0, "no UDP payloads found");
+    assert!(summary.udp_payloads > 0, "no UDP payloads found");
     assert_eq!(
         failed_payloads,
         0,
@@ -75,11 +85,136 @@ fn certification_example_pcaps_contain_parseable_difi_udp_payloads() {
         failures.len(),
         failures.join("\n")
     );
-    assert_eq!(parsed_payloads, udp_payloads_total);
-    eprintln!(
-        "parsed {parsed_payloads} DIFI UDP payloads from {} certification example captures",
-        captures.len()
-    );
+    assert_eq!(summary.parsed_payloads, summary.udp_payloads);
+    summary.print(captures.len());
+}
+
+#[derive(Debug, Default)]
+struct CertificationSummary {
+    udp_payloads: usize,
+    parsed_payloads: usize,
+    length_range: LengthRange,
+    stream_ids: BTreeSet<u32>,
+    by_profile: BTreeMap<&'static str, usize>,
+    by_packet_type: BTreeMap<String, usize>,
+    by_packet_class: BTreeMap<String, usize>,
+    captures: Vec<CaptureSummary>,
+}
+
+impl CertificationSummary {
+    fn record_udp_payload(&mut self, len: usize) {
+        self.udp_payloads += 1;
+        self.length_range.record(len);
+    }
+
+    fn record_parsed_payload(&mut self, profile: &'static str, prologue: &Prologue) {
+        self.parsed_payloads += 1;
+        self.stream_ids.insert(prologue.stream_id);
+        *self.by_profile.entry(profile).or_default() += 1;
+        *self
+            .by_packet_type
+            .entry(packet_type_label(prologue.header.packet_type))
+            .or_default() += 1;
+        *self
+            .by_packet_class
+            .entry(packet_class_label(prologue.class_id.packet_class))
+            .or_default() += 1;
+    }
+
+    fn record_capture(&mut self, capture: CaptureSummary) {
+        self.captures.push(capture);
+    }
+
+    fn print(&self, capture_count: usize) {
+        eprintln!(
+            "DIFI certification examples: captures={capture_count} udp_payloads={} parsed={} len={} bytes unique_streams={}",
+            self.udp_payloads,
+            self.parsed_payloads,
+            self.length_range.display(),
+            self.stream_ids.len()
+        );
+        eprintln!("  captures:");
+        for capture in &self.captures {
+            eprintln!(
+                "    {}: udp_payloads={} len={} bytes unique_streams={}",
+                capture.path.display(),
+                capture.udp_payloads,
+                capture.length_range.display(),
+                capture.stream_ids.len()
+            );
+        }
+        print_counts("accepted profiles", &self.by_profile);
+        print_counts("packet types", &self.by_packet_type);
+        print_counts("packet classes", &self.by_packet_class);
+    }
+}
+
+#[derive(Debug)]
+struct CaptureSummary {
+    path: PathBuf,
+    udp_payloads: usize,
+    length_range: LengthRange,
+    stream_ids: BTreeSet<u32>,
+}
+
+impl CaptureSummary {
+    fn new(path: PathBuf) -> Self {
+        Self {
+            path,
+            udp_payloads: 0,
+            length_range: LengthRange::default(),
+            stream_ids: BTreeSet::new(),
+        }
+    }
+
+    fn record_udp_payload(&mut self, len: usize) {
+        self.udp_payloads += 1;
+        self.length_range.record(len);
+    }
+
+    fn record_parsed_payload(&mut self, prologue: &Prologue) {
+        self.stream_ids.insert(prologue.stream_id);
+    }
+}
+
+#[derive(Debug, Default, Clone, Copy)]
+struct LengthRange {
+    min: Option<usize>,
+    max: Option<usize>,
+}
+
+impl LengthRange {
+    fn record(&mut self, len: usize) {
+        self.min = Some(self.min.map_or(len, |min| min.min(len)));
+        self.max = Some(self.max.map_or(len, |max| max.max(len)));
+    }
+
+    fn display(self) -> String {
+        match (self.min, self.max) {
+            (Some(min), Some(max)) => format!("{min}..{max}"),
+            _ => "n/a".to_string(),
+        }
+    }
+}
+
+fn print_counts<K>(label: &str, counts: &BTreeMap<K, usize>)
+where
+    K: std::fmt::Display,
+{
+    eprintln!("  {label}:");
+    for (key, count) in counts {
+        eprintln!("    {key}: {count}");
+    }
+}
+
+fn packet_type_label(packet_type: PacketType) -> String {
+    let code = packet_type as u8;
+    format!("0x{code:X} {packet_type:?}")
+}
+
+fn packet_class_label(packet_class: PacketClassCode) -> String {
+    let code = packet_class.raw();
+    format!("0x{code:04X} {packet_class:?}")
 }
 
 fn certification_dir() -> Option<PathBuf> {
@@ -190,7 +325,13 @@ fn payload_oui(payload: &[u8]) -> Option<u32> {
     Some(u32::from_be_bytes(payload.get(8..12)?.try_into().ok()?) & 0x00FF_FFFF)
 }
 
-fn parse_with_supported_profiles(payload: &[u8]) -> Result<(), String> {
+#[derive(Debug)]
+struct ParsedPayload<'a> {
+    profile: &'static str,
+    packet: Packet<'a>,
+}
+
+fn parse_with_supported_profiles(payload: &[u8]) -> Result<ParsedPayload<'_>, String> {
     let profiles = [
         ("DIFI 1.3.0 strict", ParseOptions::default()),
         (
@@ -219,7 +360,12 @@ fn parse_with_supported_profiles(payload: &[u8]) -> Result<(), String> {
     let mut errors = Vec::new();
     for (label, options) in profiles {
         match parse_packet_exact_with_options(payload, options) {
-            Ok(_) => return Ok(()),
+            Ok(packet) => {
+                return Ok(ParsedPayload {
+                    profile: label,
+                    packet,
+                });
+            }
             Err(err) => errors.push(format!("{label}: {err}")),
         }
     }
