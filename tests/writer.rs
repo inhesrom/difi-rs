@@ -44,6 +44,52 @@ fn standard_data() -> Vec<u8> {
     ])
 }
 
+fn sink_capabilities_response_short_fixture() -> Vec<u8> {
+    let [cid0, cid1] = class_id(0x0101, 0x0008, 0);
+
+    bytes(&[
+        header(0x7, 0x4, 0x1, 0x2, 0, 18),
+        0,
+        cid0,
+        cid1,
+        1,
+        0,
+        2,
+        CAM_EXTENSION_ACK_VALIDATE,
+        10,
+        11,
+        12,
+        CIF_COMMAND_SHORT,
+        30,
+        0,
+        31,
+        40,
+        0,
+        41,
+    ])
+}
+
+fn sink_capabilities_response_long_fixture() -> Vec<u8> {
+    let [cid0, cid1] = class_id(0x0101, 0x0008, 0);
+
+    bytes(&[
+        header(0x7, 0x4, 0x1, 0x2, 0, 14),
+        0,
+        cid0,
+        cid1,
+        1,
+        0,
+        2,
+        CAM_EXTENSION_ACK_VALIDATE,
+        10,
+        11,
+        12,
+        CIF_COMMAND_LONG,
+        CIF_CONTROL_FLOW_1,
+        0xDEAD_BEEF,
+    ])
+}
+
 fn options(standard: DifiStandardVersion, compatibility: CompatibilityMode) -> WriteOptions {
     WriteOptions {
         standard,
@@ -526,6 +572,82 @@ fn checked_encoded_len_rejects_non_word_aligned_signal_data_payload() {
         encoded_len(&packet),
         Err(WriteError::PayloadLengthNotWordAligned { len: 2 })
     ));
+
+    let mut out = [0_u8; 36];
+    assert!(matches!(
+        write_packet(&packet, &mut out),
+        Err(WriteError::PayloadLengthNotWordAligned { len: 2 })
+    ));
+}
+
+#[test]
+fn checked_writer_rejects_malformed_sink_capabilities_response_forms() {
+    let long_fixture = sink_capabilities_response_long_fixture();
+    let Packet::SinkCapabilitiesResponse(mut long_response) =
+        parse_packet_exact(&long_fixture).expect("valid long response")
+    else {
+        panic!("expected sink capabilities response");
+    };
+    let unaligned_table = [0xAA_u8, 0xBB, 0xCC];
+    long_response.capability_table = &unaligned_table;
+    assert!(matches!(
+        encoded_len(&Packet::SinkCapabilitiesResponse(long_response)),
+        Err(WriteError::CapabilityTableLengthNotWordAligned { len: 3 })
+    ));
+
+    let short_fixture = sink_capabilities_response_short_fixture();
+    let Packet::SinkCapabilitiesResponse(mut short_response) =
+        parse_packet_exact(&short_fixture).expect("valid short response")
+    else {
+        panic!("expected sink capabilities response");
+    };
+    short_response.cif1 = Some(CIF_CONTROL_FLOW_1);
+    assert!(matches!(
+        encoded_len(&Packet::SinkCapabilitiesResponse(short_response)),
+        Err(WriteError::UnexpectedField { field: "cif1" })
+    ));
+}
+
+#[test]
+fn checked_writer_rejects_inconsistent_status_report_optional_limits() {
+    let [cid0, cid1] = class_id(0x0100, 0x0009, 0);
+    let sample_rate = fixed_hz(40_000_000);
+    let bandwidth = fixed_hz(20_000_000);
+    let full = bytes(&[
+        header(0x7, 0, 0x1, 0x2, 0, 21),
+        0x0102_0304,
+        cid0,
+        cid1,
+        1,
+        0,
+        2,
+        CAM_STATUS_REPORT_EXECUTE,
+        10,
+        11,
+        12,
+        0,
+        0,
+        0x0000_4000,
+        0x0000_2018,
+        0x0001_0002,
+        0x0003_0000,
+        sample_rate[0],
+        sample_rate[1],
+        bandwidth[0],
+        bandwidth[1],
+    ]);
+    let Packet::StatusReport(mut status) = parse_packet_exact(&full).expect("valid status report")
+    else {
+        panic!("expected status report");
+    };
+    status.reference_level_limit = None;
+
+    assert!(matches!(
+        encoded_len(&Packet::StatusReport(status)),
+        Err(WriteError::MissingField {
+            field: "reference_level_limit"
+        })
+    ));
 }
 
 fn iq_spec() -> SignalDataWriteSpec {
@@ -589,6 +711,55 @@ fn writes_direct_complex_i8_iq_data() {
     assert!(matches!(
         encoded_iq_data_i8_len(iq_spec(), &odd),
         Err(WriteError::OddComplexI8SampleCount { samples: 1 })
+    ));
+}
+
+#[test]
+fn direct_iq_writers_reject_invalid_sequence_and_small_buffers() {
+    let i8_samples = [ComplexI8 { i: 1, q: -1 }, ComplexI8 { i: -128, q: 127 }];
+    let i16_samples = [
+        ComplexI16 { i: 1, q: -2 },
+        ComplexI16 {
+            i: -32768,
+            q: 32767,
+        },
+    ];
+    let mut bad_sequence = iq_spec();
+    bad_sequence.sequence = 16;
+
+    assert!(matches!(
+        encoded_iq_data_i8_len(bad_sequence, &i8_samples),
+        Err(WriteError::FieldOutOfRange {
+            field: "sequence",
+            max: 0x0F,
+            actual: 16
+        })
+    ));
+    assert!(matches!(
+        encoded_iq_data_i16_len(bad_sequence, &i16_samples),
+        Err(WriteError::FieldOutOfRange {
+            field: "sequence",
+            max: 0x0F,
+            actual: 16
+        })
+    ));
+
+    let mut i8_too_small = [0_u8; 31];
+    assert!(matches!(
+        write_iq_data_i8(iq_spec(), &i8_samples, &mut i8_too_small),
+        Err(WriteError::OutputTooSmall {
+            needed: 32,
+            actual: 31
+        })
+    ));
+
+    let mut i16_too_small = [0_u8; 35];
+    assert!(matches!(
+        write_iq_data_i16(iq_spec(), &i16_samples, &mut i16_too_small),
+        Err(WriteError::OutputTooSmall {
+            needed: 36,
+            actual: 35
+        })
     ));
 }
 

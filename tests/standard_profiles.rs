@@ -1,8 +1,8 @@
 mod common;
 
 use difi::{
-    CompatibilityMode, DifiStandardVersion, Packet, PacketClassCode, PacketType, ParseError,
-    ParseOptions, parse_packet_exact, parse_packet_exact_with_options,
+    CompatibilityMode, DifiStandardVersion, InformationClassCode, Packet, PacketClassCode,
+    PacketType, ParseError, ParseOptions, parse_packet_exact, parse_packet_exact_with_options,
 };
 
 use common::{
@@ -55,6 +55,21 @@ fn sample_count_data() -> Vec<u8> {
     ])
 }
 
+fn sample_count_data_for_information_class(information_class: u16) -> Vec<u8> {
+    let [cid0, cid1] = class_id(information_class, 0x0002, 0);
+
+    bytes(&[
+        header(0x1, 0, 0x1, 0x1, 0, 8),
+        0x0102_0304,
+        cid0,
+        cid1,
+        0,
+        0,
+        1,
+        0xABCD_EF01,
+    ])
+}
+
 fn timing_flow_control() -> Vec<u8> {
     let [cid0, cid1] = class_id(0x0002, 0x0005, 0);
     let sample_rate = fixed_hz(40_000_000);
@@ -85,8 +100,60 @@ fn timing_flow_control() -> Vec<u8> {
     ])
 }
 
+fn real_time_timing_flow_control_for_information_class(information_class: u16) -> Vec<u8> {
+    let [cid0, cid1] = class_id(information_class, 0x0006, 0);
+    let sample_rate = fixed_hz(40_000_000);
+    let timestamp_adjustment = signed_words(250);
+
+    bytes(&[
+        header(0x6, 0, 0x1, 0x2, 0, 21),
+        0x0102_0304,
+        cid0,
+        cid1,
+        10,
+        0,
+        11,
+        CAM_CONTROL_EXECUTE,
+        7,
+        8,
+        9,
+        CIF_CONTROL_FLOW_0,
+        CIF_CONTROL_FLOW_1,
+        100,
+        sample_rate[0],
+        sample_rate[1],
+        timestamp_adjustment[0],
+        timestamp_adjustment[1],
+        0,
+        4096,
+        (0x0ABC << 4) | 0b1010,
+    ])
+}
+
 fn status_report() -> Vec<u8> {
     let [cid0, cid1] = class_id(0x0100, 0x0009, 0);
+
+    bytes(&[
+        header(0x7, 0, 0x1, 0x2, 0, 15),
+        0,
+        cid0,
+        cid1,
+        0,
+        0,
+        0,
+        CAM_STATUS_REPORT_EXECUTE,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+    ])
+}
+
+fn standalone_status_report() -> Vec<u8> {
+    let [cid0, cid1] = class_id(0x0101, 0x0009, 0);
 
     bytes(&[
         header(0x7, 0, 0x1, 0x2, 0, 15),
@@ -218,6 +285,13 @@ fn v1_2_accepts_timing_flow_control_but_rejects_link_establishment() {
         )
         .is_ok()
     );
+    assert!(
+        parse_packet_exact_with_options(
+            &real_time_timing_flow_control_for_information_class(0x0003),
+            strict(DifiStandardVersion::V1_2_1),
+        )
+        .is_ok()
+    );
 
     assert!(matches!(
         parse_packet_exact_with_options(&status_report(), strict(DifiStandardVersion::V1_2_1))
@@ -227,4 +301,44 @@ fn v1_2_accepts_timing_flow_control_but_rejects_link_establishment() {
             packet_type: PacketType::ExtensionCommandWithStreamId
         }
     ));
+}
+
+#[test]
+fn v1_3_accepts_downstream_sample_count_and_real_time_link_establishment_classes() {
+    let downstream_sample_count = sample_count_data_for_information_class(0x0005);
+    let Packet::SignalData(data) =
+        parse_packet_exact(&downstream_sample_count).expect("valid downstream sample-count data")
+    else {
+        panic!("expected signal data");
+    };
+    assert_eq!(
+        data.prologue.class_id.information_class,
+        InformationClassCode::DataPlaneDownstreamFlowControlSampleCount
+    );
+
+    let downstream_real_time_link = real_time_timing_flow_control_for_information_class(0x0106);
+    let Packet::TimingFlowControl(flow_control) = parse_packet_exact(&downstream_real_time_link)
+        .expect("valid downstream real-time flow control with link establishment")
+    else {
+        panic!("expected timing flow control");
+    };
+    assert_eq!(
+        flow_control.prologue.class_id.information_class,
+        InformationClassCode::DataPlaneDownstreamFlowControlRealTimeWithLinkEstablishment
+    );
+    assert_eq!(
+        flow_control.prologue.class_id.packet_class,
+        PacketClassCode::RealTimeTimingFlowControl
+    );
+}
+
+#[test]
+fn v1_3_rejects_link_establishment_class_membership_mismatch() {
+    assert_eq!(
+        parse_packet_exact(&standalone_status_report()).unwrap_err(),
+        ParseError::PacketClassNotInInformationClass {
+            information_class: InformationClassCode::StandaloneLinkEstablishment,
+            packet_class: PacketClassCode::StatusReport
+        }
+    );
 }

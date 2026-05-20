@@ -156,6 +156,62 @@ fn parses_version_context_and_keeps_packet_class_distinct_from_information_class
 }
 
 #[test]
+fn version_context_rejects_pad_bits_and_version_identity_mismatches() {
+    let version_word = (26 << 25) | (130 << 16) | (1 << 10);
+    let [padded_cid0, padded_cid1] = class_id(0x0001, 0x0004, 3);
+    let padded = bytes(&[
+        header(0x4, 0x1, 0x1, 0x2, 0, 11),
+        0,
+        padded_cid0,
+        padded_cid1,
+        0,
+        0,
+        0,
+        0x8000_0002,
+        0x0000_000C,
+        0x0000_0004,
+        version_word,
+    ]);
+    assert_eq!(
+        parse_packet_exact(&padded).unwrap_err(),
+        ParseError::PadBitsNotAllowed {
+            information_class: difi::InformationClassCode::VersionFlow,
+            packet_class: PacketClassCode::VersionFlowSignalContext,
+            pad_bit_count: 3
+        }
+    );
+
+    let [cid0, cid1] = class_id(0x0001, 0x0004, 0);
+    let cases = [
+        (version_word | (1 << 6), "version device type", 0_u32, 1_u32),
+        (version_word | 1, "DIFI ICD version", 0_u32, 1_u32),
+    ];
+    for (bad_version_word, field, expected, actual) in cases {
+        let input = bytes(&[
+            header(0x4, 0x1, 0x1, 0x2, 0, 11),
+            0,
+            cid0,
+            cid1,
+            0,
+            0,
+            0,
+            0x8000_0002,
+            0x0000_000C,
+            0x0000_0004,
+            bad_version_word,
+        ]);
+        assert_eq!(
+            parse_packet_exact(&input).unwrap_err(),
+            ParseError::InvalidFieldValue {
+                field,
+                expected,
+                actual
+            }
+        );
+    }
+}
+
+#[test]
 fn parses_timing_flow_control_as_twenty_one_words() {
     let [cid0, cid1] = class_id(0x0002, 0x0005, 0);
     let sample_rate = fixed_hz(40_000_000);
@@ -198,6 +254,44 @@ fn parses_timing_flow_control_as_twenty_one_words() {
     assert!(!packet.buffer_status.nearly_full);
     assert!(packet.buffer_status.nearly_empty);
     assert!(!packet.buffer_status.underflow);
+}
+
+#[test]
+fn timing_flow_control_rejects_reserved_buffer_status_bits() {
+    let [cid0, cid1] = class_id(0x0002, 0x0005, 0);
+    let sample_rate = fixed_hz(40_000_000);
+    let timestamp_adjustment = signed_words(250);
+    let input = bytes(&[
+        header(0x6, 0, 0x1, 0x1, 0, 21),
+        0x0102_0304,
+        cid0,
+        cid1,
+        10,
+        0,
+        11,
+        CAM_CONTROL_EXECUTE,
+        7,
+        8,
+        9,
+        CIF_CONTROL_FLOW_0,
+        CIF_CONTROL_FLOW_1,
+        100,
+        sample_rate[0],
+        sample_rate[1],
+        timestamp_adjustment[0],
+        timestamp_adjustment[1],
+        0,
+        4096,
+        0x0001_0000 | (0x0ABC << 4) | 0b1010,
+    ]);
+
+    assert_eq!(
+        parse_packet_exact(&input).unwrap_err(),
+        ParseError::ReservedBitsNonZero {
+            field: "buffer status",
+            bits: 1
+        }
+    );
 }
 
 #[test]
@@ -309,6 +403,35 @@ fn parses_sink_capabilities_response_short_and_borrows_long_capability_table() {
     };
     assert_eq!(packet.form, CapabilityForm::Long);
     assert_eq!(packet.capability_table, &long[52..]);
+}
+
+#[test]
+fn rejects_long_sink_capabilities_response_without_capability_table() {
+    let [cid0, cid1] = class_id(0x0101, 0x0008, 0);
+    let input = bytes(&[
+        header(0x7, 0x4, 0x1, 0x2, 0, 13),
+        0,
+        cid0,
+        cid1,
+        1,
+        0,
+        2,
+        CAM_EXTENSION_ACK_VALIDATE,
+        10,
+        11,
+        12,
+        CIF_COMMAND_LONG,
+        CIF_CONTROL_FLOW_1,
+    ]);
+
+    assert_eq!(
+        parse_packet_exact(&input).unwrap_err(),
+        ParseError::InvalidPacketSize {
+            packet_class: PacketClassCode::SinkCapabilitiesResponse,
+            expected: 14,
+            actual: 13
+        }
+    );
 }
 
 #[test]

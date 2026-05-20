@@ -81,6 +81,23 @@ fn rejects_invalid_difi_cid() {
 }
 
 #[test]
+fn rejects_unknown_information_and_packet_classes() {
+    let mut words = standard_data_words(8, 0);
+    words[3] = 0xFFFF_0000;
+    assert_eq!(
+        parse_packet_exact(&bytes(&words)).unwrap_err(),
+        ParseError::UnknownInformationClass { value: 0xFFFF }
+    );
+
+    words = standard_data_words(8, 0);
+    words[3] = 0x0000_FFFF;
+    assert_eq!(
+        parse_packet_exact(&bytes(&words)).unwrap_err(),
+        ParseError::UnknownPacketClass { value: 0xFFFF }
+    );
+}
+
+#[test]
 fn rejects_unknown_packet_type_and_reserved_timestamps() {
     let mut words = standard_data_words(8, 0);
     words[0] = header(0x2, 0, 0x1, 0x2, 0, 8);
@@ -145,6 +162,28 @@ fn sample_count_data_rejects_nonzero_padding_bits() {
     assert_eq!(
         parse_packet_exact(&input).unwrap_err(),
         ParseError::NonZeroPaddingBits
+    );
+}
+
+#[test]
+fn sample_count_data_rejects_padding_larger_than_payload() {
+    let [cid0, cid1] = class_id(0x0002, 0x0002, 1);
+    let input = bytes(&[
+        header(0x1, 0, 0x1, 0x1, 0, 7),
+        0x0102_0304,
+        cid0,
+        cid1,
+        0,
+        0,
+        1,
+    ]);
+
+    assert_eq!(
+        parse_packet_exact(&input).unwrap_err(),
+        ParseError::InvalidPadding {
+            pad_bit_count: 1,
+            payload_bits: 0
+        }
     );
 }
 

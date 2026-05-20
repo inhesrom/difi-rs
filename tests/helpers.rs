@@ -1,7 +1,11 @@
+mod common;
+
 use difi::{
     ComplexI8, ComplexI16, PacketClassCode, PacketType, SampleError, SequenceStatus,
-    SequenceTracker, iq_i8_samples, iq_i16_samples,
+    SequenceTracker, iq_i8_samples, iq_i16_samples, parse_packet_exact,
 };
+
+use common::{bytes, class_id, header};
 
 #[test]
 fn iq_i8_helper_decodes_complex_signed_cartesian_pairs() {
@@ -103,4 +107,33 @@ fn sequence_tracker_tracks_stream_type_class_and_modulo_wraparound() {
             actual: 2
         }
     );
+}
+
+fn signal_data_packet(sequence: u8) -> Vec<u8> {
+    let [cid0, cid1] = class_id(0x0000, 0x0000, 0);
+    bytes(&[
+        header(0x1, 0, 0x1, 0x2, sequence, 8),
+        0x0102_0304,
+        cid0,
+        cid1,
+        7,
+        0,
+        42,
+        0xABCD_EF01,
+    ])
+}
+
+#[test]
+fn sequence_tracker_observes_parsed_packets_and_can_reset() {
+    let first_input = signal_data_packet(3);
+    let second_input = signal_data_packet(4);
+    let first = parse_packet_exact(&first_input).expect("valid first packet");
+    let second = parse_packet_exact(&second_input).expect("valid second packet");
+    let mut tracker = SequenceTracker::new();
+
+    assert_eq!(tracker.observe(&first), SequenceStatus::First);
+    assert_eq!(tracker.observe(&second), SequenceStatus::InOrder);
+
+    tracker.reset();
+    assert_eq!(tracker.observe(&second), SequenceStatus::First);
 }
