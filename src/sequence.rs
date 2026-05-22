@@ -27,6 +27,13 @@ impl SequenceTracker {
         Self::default()
     }
 
+    /// Creates a sequence tracker with capacity for observed stream keys.
+    pub fn with_capacity(capacity: usize) -> Self {
+        Self {
+            last_seen: HashMap::with_capacity(capacity),
+        }
+    }
+
     pub fn observe(&mut self, packet: &Packet<'_>) -> SequenceStatus {
         let prologue = packet.prologue();
         self.observe_fields(

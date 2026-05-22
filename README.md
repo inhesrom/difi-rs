@@ -11,6 +11,8 @@ The parser is intentionally strict and zero-copy:
 - `parse_packet(input)` is a documented alias for exact parsing.
 - `parse_packet_exact_with_options(input, options)` and
   `parse_packet_prefix_with_options(input, options)` select a specific DIFI standard profile.
+- `PacketStreamParser` parses one UDP datagram payload at a time with exact packet semantics and
+  reports sequence status.
 - Signal-data payloads and long-form sink-capability response extension tables are returned as
   borrowed `&[u8]` slices into the caller's input buffer.
 - The crate forbids unsafe code and uses explicit big-endian reads rather than packed structs or
@@ -48,6 +50,44 @@ carry the buffer-size and buffer-status fields.
 packet classes added by later standards. `CompatibilityMode::LegacyVersionPacketType` allows DIFI
 1.2.1 parsing to accept the DIFI 1.1 version-context packet type `0x5`; strict DIFI 1.2.1 and the
 default DIFI 1.3.0 profile use context packet type `0x4` for version context.
+
+## Datagram Streams
+
+`PacketStreamParser` is a transport-agnostic helper for real-time UDP consumers. Each call parses
+one UDP datagram payload with `parse_packet_exact_with_options`, so trailing bytes and concatenated
+DIFI packets are rejected. The parser also owns a `SequenceTracker` and returns `First`, `InOrder`,
+`Duplicate`, or `Gap` for each accepted datagram.
+
+Create one parser per source or source group when stream IDs can overlap:
+
+```rust,ignore
+use std::net::UdpSocket;
+
+use difi::{Packet, PacketStreamParser, SequenceStatus};
+
+let socket = UdpSocket::bind("0.0.0.0:4991")?;
+let mut parser = PacketStreamParser::new();
+let mut buffer = [0_u8; 9000];
+
+loop {
+    let (len, source) = socket.recv_from(&mut buffer)?;
+    let parsed = parser.parse_datagram(&buffer[..len])?;
+
+    match parsed.sequence_status {
+        SequenceStatus::First | SequenceStatus::InOrder => {}
+        SequenceStatus::Duplicate => eprintln!("duplicate DIFI sequence from {source}"),
+        SequenceStatus::Gap { expected, actual } => {
+            eprintln!("DIFI sequence gap from {source}: expected {expected}, got {actual}");
+        }
+    }
+
+    if let Packet::SignalData(packet) = parsed.packet {
+        let payload = packet.payload;
+        // `payload` is borrowed from `buffer` and must not outlive this receive iteration.
+        println!("stream=0x{:08X} payload_bytes={}", packet.prologue.stream_id, payload.len());
+    }
+}
+```
 
 ## Helpers
 

@@ -9,6 +9,7 @@ mod error;
 mod header;
 mod information;
 mod packet;
+mod packet_stream;
 mod parser;
 mod payload_format;
 mod raw;
@@ -32,6 +33,7 @@ pub use error::{ParseError, Result};
 pub use header::{PacketHeader, PacketType, TimestampMode, Tsf, Tsi};
 pub use information::{InformationClassCode, PacketClassCode};
 pub use packet::{Packet, Prologue};
+pub use packet_stream::{PacketStreamParser, ParsedDatagram};
 pub use payload_format::{PayloadFormat, PayloadSampleFormat};
 pub use samples::{
     ComplexI8, ComplexI16, IqI8Samples, IqI16Samples, SampleError, iq_i8_samples, iq_i16_samples,

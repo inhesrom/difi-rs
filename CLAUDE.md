@@ -34,6 +34,7 @@ opt-in `write` feature adds a canonical, no-allocation packet writer.
 - `src/lib.rs` — public API and module registry; `parse_packet`, `parse_packet_exact[_with_options]`, `parse_packet_prefix[_with_options]`.
 - `src/parser.rs` — main parse dispatch after prologue validation.
 - `src/packet.rs` — `Packet<'a>` enum and `Prologue` struct.
+- `src/packet_stream.rs` — `PacketStreamParser` and `ParsedDatagram<'a>` for exact one-datagram parsing plus sequence status.
 - `src/header.rs` — `PacketHeader`, `PacketType`, `Tsi`, `Tsf`, `TimestampMode`.
 - `src/class_id.rs` — `ClassId` and `DIFI_CID = 0x6A621E`.
 - `src/information.rs` — `InformationClassCode`, `PacketClassCode`.
@@ -59,6 +60,7 @@ Integration tests live in `tests/`:
 - `prologue_and_data.rs` — prologue / header validation.
 - `standard_profiles.rs` — per-version packet-type availability rules.
 - `helpers.rs` — sample decoder coverage (`iq_i8_samples`, `iq_i16_samples`).
+- `packet_stream.rs` — stateful datagram parser and sequence-status coverage.
 - `properties.rs` — `proptest`-driven property tests.
 - `allocations.rs` — zero-allocation verification on the parse path.
 - `writer.rs` — encoder and round-trip tests; requires `--features write`.
