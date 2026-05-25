@@ -20,3 +20,8 @@ proptest = "1"
 [[bench]]
 name = "parser"
 harness = false
+
+[[example]]
+name = "udp_sender"
+path = "examples/udp_sender.rs"
+required-features = ["write"]
