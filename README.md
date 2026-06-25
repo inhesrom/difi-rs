@@ -1,6 +1,6 @@
-# difi
+# difi-rs
 
-`difi` is a Rust parser library for UDP payloads containing DIFI Standard packets, with an
+`difi-rs` is a Rust parser library for UDP payloads containing DIFI Standard packets, with an
 optional buffer-only writer behind the `write` feature. The default parser and writer profile is
 DIFI 1.3.0 in strict mode.
 
